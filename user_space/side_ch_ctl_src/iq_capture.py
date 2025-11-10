@@ -80,6 +80,9 @@ def parse_iq(iq, iq_len):
 
     return timestamp, iq_capture, agc_gain, rssi_half_db, ch_idle, demod, tx_rf, fcs_ok
 
+if(sys.argv <2):
+    print("Usage: python3 iq_capture.py <file_to_save>")
+
 UDP_IP = "192.168.10.1" #Local IP to listen
 UDP_PORT = 4000         #Local port to listen
 
@@ -90,24 +93,28 @@ sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 464) # for low latency. 464
 # align with side_ch_control.v and all related user space, remote files
 MAX_NUM_DMA_SYMBOL = 8192
 
-if len(sys.argv)<2:
-    print("Assume iq_len = 8187! (Max UDP 65507 bytes; (65507/8)-1 = 8187)")
-    iq_len = 8187
-else:
-    iq_len = int(sys.argv[1])
-    print(iq_len)
-    # print(type(num_eq))
+# if len(sys.argv)<2:
+#     print("Assume iq_len = 8187! (Max UDP 65507 bytes; (65507/8)-1 = 8187)")
+#     iq_len = 8187
+# else:
+#     iq_len = int(sys.argv[1])
+#     print(iq_len)
+#     # print(type(num_eq))
 
-if iq_len>8187:
-    iq_len = 8187
-    print('Limit iq_len to 8187! (Max UDP 65507 bytes; (65507/8)-1 = 8187)')
+# if iq_len>8187:
+#     iq_len = 8187
+#     print('Limit iq_len to 8187! (Max UDP 65507 bytes; (65507/8)-1 = 8187)')
+
+iq_len = 3000 ## default for now!
 
 num_dma_symbol_per_trans = 1 + iq_len
 num_byte_per_trans = 8*num_dma_symbol_per_trans
 
-if os.path.exists("iq.txt"):
-    os.remove("iq.txt")
-iq_fd=open('iq.txt','a')
+file_name = sys.argv[1]
+
+if os.path.exists(file_name):
+    os.remove(file_name)
+iq_fd=open(file_name,'a')
 
 plt.ion()
 
