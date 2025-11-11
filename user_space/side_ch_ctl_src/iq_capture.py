@@ -80,8 +80,9 @@ def parse_iq(iq, iq_len):
 
     return timestamp, iq_capture, agc_gain, rssi_half_db, ch_idle, demod, tx_rf, fcs_ok
 
-if(sys.argv <2):
+if(len(sys.argv) <2):
     print("Usage: python3 iq_capture.py <file_to_save>")
+    sys.exit(-1)
 
 UDP_IP = "192.168.10.1" #Local IP to listen
 UDP_PORT = 4000         #Local port to listen
@@ -110,7 +111,7 @@ iq_len = 3000 ## default for now!
 num_dma_symbol_per_trans = 1 + iq_len
 num_byte_per_trans = 8*num_dma_symbol_per_trans
 
-file_name = sys.argv[1]
+file_name = sys.argv[1] + ".dat"
 
 if os.path.exists(file_name):
     os.remove(file_name)
