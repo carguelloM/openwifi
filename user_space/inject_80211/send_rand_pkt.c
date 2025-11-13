@@ -9,7 +9,8 @@ types of frames!
 #define BUF_SIZE_MAX  128
 #define	OFFSET_RATE 0x11
 #define MCS_OFFSET 0x19
-
+#define SEQ_NUM_LOW_OFFSET 0x16
+#define SEQ_NUM_HIGH_OFFSET 0x17
 
 /* wifi bitrate to use in 500kHz units */
 static const u8 u8aRatesToUse[] = {
@@ -47,7 +48,14 @@ static u8 ieee_hdr_data[] =
 	0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // BSSID/MAC of AP
 	0x23, 0x23, 0x23, 0x23, 0x23, 0x23, // Transmitter address
 	0x23, 0x23, 0x23, 0x23, 0x23, 0x23, // Source address
-	0x10, 0x86,                         // 0--fragment number; 0x861=2145--sequence number
+	0x00, 0x00,                         // 0--fragment number; 0x861=2145--sequence number
+};
+
+static u8 llc[] = 
+{
+	 0xAA, 0xAA, 0x03, // LLC Header
+    0x00, 0x00, 0x00, // OUI
+    0x00, 0x00,       // Type
 };
 
 // generate random payload
@@ -57,16 +65,16 @@ void gen_rand_payload(int pyld_len, u8 * pyld)
 	// srand() must be call in main loop! 
 	for (int i=0; i< pyld_len; i++)
 	{
-		pyld[i] =  (u8) (rand() * 256/ (RAND_MAX + 1.0));
+		pyld[i] =  (u8)(rand() % 256);
 	}
 }
 
 int main(int argc , char*argv[])
 {
-	u8 buffer[BUF_SIZE_TOTAL];
-	u8 rand_pyld[ 69 + 4]; // 69 bytes of random payload, 4 for crc
+	u8 buffer[BUF_SIZE_MAX];
+	u8 rand_pyld[ 69];
 	char szErrbuf[PCAP_ERRBUF_SIZE];
-	int i, nLinkEncap = 0, payld_size=69+4, nDelay = 100000, ieee_hdr_len = sizeof(ieee_hdr_data);
+	int i, nLinkEncap = 0, payld_size=69, nDelay = 100000, ieee_hdr_len = sizeof(ieee_hdr_data);
 	int radio_tap_hdr_len = sizeof(u8aRadiotapHeader), rate_index=0;
 	pcap_t *pcap_pntr = NULL;
 
@@ -74,7 +82,7 @@ int main(int argc , char*argv[])
 
 	// open the interface in pcap
 	szErrbuf[0] = '\0';
-	pcap_pntr = pcap_open_live(argv[optind], 800, 1, 20, szErrbuf);
+	pcap_pntr = pcap_open_live("sdr0", 800, 1, 20, szErrbuf);
 
 	if (pcap_pntr == NULL)
 	{
@@ -82,7 +90,7 @@ int main(int argc , char*argv[])
 		return -1;
 	}
 
-	nLinkEncap = pcap_datalink(pcap_pntr)
+	nLinkEncap = pcap_datalink(pcap_pntr);
 	switch (nLinkEncap)
 	{
 		case DLT_PRISM_HEADER:
@@ -95,7 +103,7 @@ int main(int argc , char*argv[])
 
 		default:
 			printf("!!! unknown encapsulation on %s !\n", argv[1]);
-			return -2
+			return -2;
 	}
 
 	if ( pcap_setnonblock(pcap_pntr, 1, szErrbuf) )
@@ -104,11 +112,9 @@ int main(int argc , char*argv[])
 		return -3;
 	}
 
+	u8 * buf_p = buffer;
+	int pkt_size = 0;
 
-	gen_rand_payload(payld_size, rand_pyld);
-
-	u8 * buf_p = &buffer
-	int pkt_size;
 	memset(buf_p, 0, sizeof(buffer));
 	
 	// Radio Tap Header
@@ -118,17 +124,35 @@ int main(int argc , char*argv[])
 	pkt_size += radio_tap_hdr_len;
 
 	//80211 HDR
+	ieee802 = buf_p;
 	memcpy(buf_p, ieee_hdr_data, ieee_hdr_len);
 	buf_p += ieee_hdr_len;
-	pkt_size += ieee_hdr_len
+	pkt_size += ieee_hdr_len;
+
+	//LLC
+	int llc_size = sizeof(llc);
+	memcpy(buf_p, llc, llc_size);
+	buf_p += llc_size;
+	pkt_size +=llc_size;
+
+	srand(42);
 
 	//payload 
-	memcpy(buf_p, rand_pyld, rand_pyld, payld_size);
-	pkt_size += payld_size
+	pkt_size += payld_size // note payload copy happens in the loop
 
-	int packet_si
+	u16 seq_num = 0;
+	printf("About to start pkt injection\n")
 	for(int i=0; i < 10; i++)
 	{
+		//update sequence num
+		ieee802[SEQ_NUM_LOW_OFFSET] = seq & 0xFF;
+		ieee802[SEQ_NUM_HIGH_OFFSET] = (seq >> 8) & 0xFF;
+
+		// updat payload
+		gen_rand_payload(payld_size, rand_pyld);
+		memcpy(buf_p, rand_pyld, rand_pyld, payld_size);
+
+		// inject packet
 		r = pcap_inject(pcap_pntr, buffer, pkt_size)
 		if(r != pkt_size)
 		{
@@ -136,7 +160,11 @@ int main(int argc , char*argv[])
 			return -3;
 		}
 		usleep(nDelay);
+
+		// increment sequence number
+		seq = (seq + 1) & 0x0FFF;   // use only last 12 bits
 	}
+	printf("Packet Injection Done\n")
 }
 
 
