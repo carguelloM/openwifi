@@ -113,6 +113,7 @@ int main(int argc , char*argv[])
 	}
 
 	u8 * buf_p = buffer;
+	u8 * ieee802;
 	int pkt_size = 0;
 
 	memset(buf_p, 0, sizeof(buffer));
@@ -138,22 +139,25 @@ int main(int argc , char*argv[])
 	srand(42);
 
 	//payload 
-	pkt_size += payld_size // note payload copy happens in the loop
+	pkt_size += payld_size; // note payload copy happens in the loop
 
 	u16 seq_num = 0;
-	printf("About to start pkt injection\n")
-	for(int i=0; i < 10; i++)
+	u16 seq_field;
+	int r;
+	printf("About to start pkt injection!\n");
+	for(int i=0; i < 10000; i++)
 	{
 		//update sequence num
-		ieee802[SEQ_NUM_LOW_OFFSET] = seq & 0xFF;
-		ieee802[SEQ_NUM_HIGH_OFFSET] = (seq >> 8) & 0xFF;
+		seq_field = seq_num << 4;
+		ieee802[SEQ_NUM_LOW_OFFSET] = seq_field & 0xFF;
+		ieee802[SEQ_NUM_HIGH_OFFSET] = (seq_field >> 8) & 0xFF;
 
 		// updat payload
 		gen_rand_payload(payld_size, rand_pyld);
-		memcpy(buf_p, rand_pyld, rand_pyld, payld_size);
+		memcpy(buf_p, rand_pyld, payld_size);
 
 		// inject packet
-		r = pcap_inject(pcap_pntr, buffer, pkt_size)
+		r = pcap_inject(pcap_pntr, buffer, pkt_size);
 		if(r != pkt_size)
 		{
 			perror("Problem with pkt injection\n");
@@ -162,9 +166,9 @@ int main(int argc , char*argv[])
 		usleep(nDelay);
 
 		// increment sequence number
-		seq = (seq + 1) & 0x0FFF;   // use only last 12 bits
+		seq_num = (seq_num + 1) & 0x0FFF;   // use only last 12 bits
 	}
-	printf("Packet Injection Done\n")
+	printf("Packet Injection Done\n");
 }
 
 
