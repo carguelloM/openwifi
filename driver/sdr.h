@@ -60,6 +60,7 @@ struct openwifi_vif {
   /* beaconing */
   struct delayed_work beacon_work;
   bool enable_beacon;
+
 };
 
 union u32_byte4 {
@@ -77,6 +78,9 @@ union u16_byte2 {
 #define NUM_TX_ANT_MASK 3
 #define NUM_RX_ANT_MASK 3
 
+#define LTF_ACTIVE_MASK 0xFFFFFFC007FFFFFE
+#define INIT_KEY   0x1D98C40005EB1F6C // This wont be here in a real system
+//#define INIT_KEY 0x0A60530000567D4C
 // -------------sdrctl reg category-----------------
 enum sdrctl_reg_cat {
   SDRCTL_REG_CAT_NO_USE = 0,
@@ -91,6 +95,7 @@ enum sdrctl_reg_cat {
   SDRCTL_REG_CAT_DRV_XPU,
 };
 
+#define LTF MASK
 // ------------ software and RF reg definition ------------
 #define MAX_NUM_DRV_REG            8
 #define DRV_TX_REG_IDX_RATE        0
@@ -525,8 +530,29 @@ struct openwifi_priv {
   // u8 num_led;
   // struct led_classdev *led[MAX_NUM_LED];//zc706 has 4 user leds. please find openwifi_dev_probe to see how we get them.
   // char led_name[MAX_NUM_LED][OPENWIFI_LED_MAX_NAME_LEN];
-
+  
   spinlock_t lock;
+
+  // For rolling preambles
+  
+  s64 tsf_err_filt;
+  u8 is_first_beacon;
+
+  // All this should go in vif but we are testing 1 interface per board
+  enum nl80211_iftype iftype; 
+  struct delayed_work check_nonce; 
+  atomic_t check_nonce_running; 
+  atomic_t check_nonce_init;
+  atomic_t next_preamble_ready;
+  
+  u64 current_nonce;
+
+  u64 next_preamble;
+  u32 next_preamble_low;
+  u32 next_preamble_high;
+  
+  struct crypto_shash *tfm;
+  struct shash_desc *desc;
 };
 
 #endif /* OPENWIFI_SDR */

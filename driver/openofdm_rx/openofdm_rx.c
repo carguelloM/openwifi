@@ -58,8 +58,11 @@ static inline void OPENOFDM_RX_REG_SOFT_DECODING_write(u32 Data) {
 static inline void OPENOFDM_RX_REG_FFT_WIN_SHIFT_write(u32 Data) {
 	reg_write(OPENOFDM_RX_REG_FFT_WIN_SHIFT_ADDR, Data);
 }
-static inline void OPENOFDM_RX_REG_PHASE_OFFSET_ABS_TH_write(u32 Data) {
-	reg_write(OPENOFDM_RX_REG_PHASE_OFFSET_ABS_TH_ADDR, Data);
+static inline void OPENOFDM_RX_REG_LTF_ONE_write(u32 Data) {
+	reg_write(OPENOFDM_RX_REG_LTF_ONE_ADDR, Data);
+}
+static inline void OPENOFDM_RX_REG_LTF_TWO_write(u32 Data) {
+	reg_write(OPENOFDM_RX_REG_LTF_TWO_ADDR, Data);
 }
 static const struct of_device_id dev_of_ids[] = {
 	{ .compatible = "sdr,openofdm_rx", },
@@ -95,7 +98,7 @@ static inline u32 hw_init(enum openofdm_rx_mode mode){
 		}
 	}
 	printk("%s hw_init input: power_thres %d dc_running_sum_th %d min_plateau %d\n", openofdm_rx_compatible_str, OPENOFDM_RX_POWER_THRES_INIT, OPENOFDM_RX_DC_RUNNING_SUM_TH_INIT, OPENOFDM_RX_MIN_PLATEAU_INIT);
-
+	
 	// 1) power threshold configuration and reset
   openofdm_rx_api->OPENOFDM_RX_REG_ENABLE_write(1); //bit1 of slv_reg1: force ht smoothing to have better sensitivity
 	
@@ -105,8 +108,10 @@ static inline u32 hw_init(enum openofdm_rx_mode mode){
   openofdm_rx_api->OPENOFDM_RX_REG_MIN_PLATEAU_write(OPENOFDM_RX_MIN_PLATEAU_INIT);
 	openofdm_rx_api->OPENOFDM_RX_REG_SOFT_DECODING_write((OPENWIFI_MAX_SIGNAL_LEN_TH<<16)|(OPENWIFI_MIN_SIGNAL_LEN_TH<<12)|1); //bit1 enable soft decoding; bit15~12 min pkt length threshold; bit31~16 max pkt length threshold
 	openofdm_rx_api->OPENOFDM_RX_REG_FFT_WIN_SHIFT_write((OPENOFDM_RX_SMALL_EQ_OUT_COUNTER_TH<<4)|OPENOFDM_RX_FFT_WIN_SHIFT_INIT);
-  openofdm_rx_api->OPENOFDM_RX_REG_PHASE_OFFSET_ABS_TH_write(OPENOFDM_RX_PHASE_OFFSET_ABS_TH);
-
+  //openofdm_rx_api->OPENOFDM_RX_REG_PHASE_OFFSET_ABS_TH_write(OPENOFDM_RX_PHASE_OFFSET_ABS_TH); // WE ELIMINATED THE WATCHDOG
+  openofdm_rx_api->OPENOFDM_RX_REG_LTF_ONE_write(OPENOFDM_RX_LTF_ONE_VAL);
+  openofdm_rx_api->OPENOFDM_RX_REG_LTF_TWO_write(OPENOFDM_RX_LTF_TWO_VAL);
+	printk("%s MSB_LTF %x LSB_LTF %x\n", openofdm_rx_compatible_str, OPENOFDM_RX_LTF_TWO_VAL, OPENOFDM_RX_LTF_ONE_VAL);
 	//rst
 	for (i=0;i<8;i++)
 		openofdm_rx_api->OPENOFDM_RX_REG_MULTI_RST_write(0);
@@ -152,7 +157,8 @@ static int dev_probe(struct platform_device *pdev)
 	openofdm_rx_api->OPENOFDM_RX_REG_MIN_PLATEAU_write=OPENOFDM_RX_REG_MIN_PLATEAU_write;
 	openofdm_rx_api->OPENOFDM_RX_REG_SOFT_DECODING_write=OPENOFDM_RX_REG_SOFT_DECODING_write;
 	openofdm_rx_api->OPENOFDM_RX_REG_FFT_WIN_SHIFT_write=OPENOFDM_RX_REG_FFT_WIN_SHIFT_write;
-	openofdm_rx_api->OPENOFDM_RX_REG_PHASE_OFFSET_ABS_TH_write=OPENOFDM_RX_REG_PHASE_OFFSET_ABS_TH_write;
+	openofdm_rx_api->OPENOFDM_RX_REG_LTF_ONE_write=OPENOFDM_RX_REG_LTF_ONE_write;
+	openofdm_rx_api->OPENOFDM_RX_REG_LTF_TWO_write=OPENOFDM_RX_REG_LTF_TWO_write;
 
 	/* Request and map I/O memory */
 	io = platform_get_resource(pdev, IORESOURCE_MEM, 0);

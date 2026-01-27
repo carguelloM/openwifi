@@ -217,7 +217,8 @@ const char *openofdm_rx_compatible_str = "sdr,openofdm_rx";
 #define OPENOFDM_RX_REG_MIN_PLATEAU_ADDR   (3*4)
 #define OPENOFDM_RX_REG_SOFT_DECODING_ADDR (4*4)
 #define OPENOFDM_RX_REG_FFT_WIN_SHIFT_ADDR (5*4)
-#define OPENOFDM_RX_REG_PHASE_OFFSET_ABS_TH_ADDR (18*4)
+#define OPENOFDM_RX_REG_LTF_ONE_ADDR       (17*4) // low bits
+#define OPENOFDM_RX_REG_LTF_TWO_ADDR        (18*4) // high bits
 #define OPENOFDM_RX_REG_STATE_HISTORY_ADDR (20*4)
 
 enum openofdm_rx_mode {
@@ -256,7 +257,10 @@ enum openofdm_rx_mode {
 #define OPENOFDM_RX_FFT_WIN_SHIFT_INIT 4
 #define OPENOFDM_RX_SMALL_EQ_OUT_COUNTER_TH 48
 #define OPENOFDM_RX_PHASE_OFFSET_ABS_TH 11
-
+#define OPENOFDM_RX_LTF_ONE_VAL  0x00567D4C // low bits 
+#define OPENOFDM_RX_LTF_TWO_VAL 0x0A605300 // high bits
+//#define OPENOFDM_RX_LTF_ONE_VAL  0x05EB1F6C
+//#define OPENOFDM_RX_LTF_TWO_VAL 0x1D98C400
 #define OPENWIFI_MAX_SIGNAL_LEN_TH 1700 //Packet longer  than this threshold will result in receiver early termination. It goes to openofdm_rx/xpu/rx_intf
 
 #define OPENWIFI_MIN_SIGNAL_LEN_TH 14   //Packet shorter than this threshold will result in receiver early termination. It goes to openofdm_rx/xpu/rx_intf
@@ -276,7 +280,8 @@ struct openofdm_rx_driver_api {
   void (*OPENOFDM_RX_REG_MIN_PLATEAU_write)(u32 value);
   void (*OPENOFDM_RX_REG_SOFT_DECODING_write)(u32 value);
   void (*OPENOFDM_RX_REG_FFT_WIN_SHIFT_write)(u32 value);
-  void (*OPENOFDM_RX_REG_PHASE_OFFSET_ABS_TH_write)(u32 value);
+  void (*OPENOFDM_RX_REG_LTF_ONE_write)(u32 value);
+  void (*OPENOFDM_RX_REG_LTF_TWO_write)(u32 value);
 };
 
 // ---------------------------------------openofdm tx-------------------------------
@@ -285,6 +290,8 @@ const char *openofdm_tx_compatible_str = "sdr,openofdm_tx";
 #define OPENOFDM_TX_REG_MULTI_RST_ADDR                 (0*4)
 #define OPENOFDM_TX_REG_INIT_PILOT_STATE_ADDR          (1*4)
 #define OPENOFDM_TX_REG_INIT_DATA_STATE_ADDR           (2*4)
+#define OPENOFDM_TX_REG_LTF_LOW_ADDR                   (17*4)
+#define OPENOFDM_TX_REG_LTF_HIGH_ADDR                  (18*4)
 
 enum openofdm_tx_mode {
   OPENOFDM_TX_TEST = 0,
@@ -300,6 +307,8 @@ struct openofdm_tx_driver_api {
   void (*OPENOFDM_TX_REG_MULTI_RST_write)(u32 value);
   void (*OPENOFDM_TX_REG_INIT_PILOT_STATE_write)(u32 value);
   void (*OPENOFDM_TX_REG_INIT_DATA_STATE_write)(u32 value);
+  void (*OPENOFDM_TX_REG_LTF_LOW_write)(u32 value);
+  void (*OPENOFDM_TX_REG_LTF_HIGH_write)(u32 value);
 };
 
 // ---------------------------------------xpu low MAC controller-------------------------------
@@ -457,7 +466,7 @@ struct xpu_driver_api {
 
   void (*XPU_REG_AMPDU_ACTION_write)(u32 value);
   u32  (*XPU_REG_AMPDU_ACTION_read)(void);
-
+  
   void (*XPU_REG_MAC_ADDR_write)(u8 *mac_addr);
 };
 

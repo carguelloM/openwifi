@@ -56,6 +56,7 @@
 #include "hw_def.h"
 #include "sdr.h"
 #include "git_rev.h"
+#include <crypto/hash.h>
 
 #ifndef RFSoC4x2
 extern int ad9361_do_calib_run(struct ad9361_rf_phy *phy, u32 cal, int arg); 
@@ -463,6 +464,7 @@ inline int rssi_half_db_to_rssi_dbm(int rssi_half_db, int rssi_correction)
 
 static irqreturn_t openwifi_rx_interrupt(int irq, void *dev_id)
 {
+ 
   struct ieee80211_hw *dev = dev_id;
   struct openwifi_priv *priv = dev->priv;
   struct ieee80211_rx_status rx_status = {0};
@@ -516,6 +518,8 @@ static irqreturn_t openwifi_rx_interrupt(int irq, void *dev_id)
     // phy_rx_sn_hw = (fcs_ok&0x7f);//0x7f is FPGA limitation
     // dma_driver_buf_idx_mod = (state.residue&0x7f);
     fcs_ok = ((fcs_ok&0x80)!=0);
+             
+    
 
     if ( (len>=14 && (!len_overflow)) && (rate_idx>=8 && rate_idx<=23)) {
       // if ( phy_rx_sn_hw!=dma_driver_buf_idx_mod) {
@@ -599,8 +603,107 @@ static irqreturn_t openwifi_rx_interrupt(int irq, void *dev_id)
 
         memcpy(IEEE80211_SKB_RXCB(skb), &rx_status, sizeof(rx_status)); // put rx_status into skb->cb, from now on skb->cb is not dma_dsts any more.
         ieee80211_rx_irqsafe(dev, skb); // call mac80211 function
-
+        //printk("%s openwifi_rx TSF: %llu", sdr_compatible_str, rx_status.mactime);//FIXME: DELETE THIS DEBUG PRINT
         // printk("%s openwifi_rx: addr1_low32 %08x self addr %08x\n", sdr_compatible_str, addr1_low32, ( *( (u32*)(priv->mac_addr+2) ) ));
+        
+       
+        struct ieee80211_mgmt *my_mgmt = (void *)pdata_tmp + 16;
+
+        // check association request and you are AP to start nonce check
+        if(!atomic_read(&priv->check_nonce_running) && len>= 24 && fcs_ok && ieee80211_is_assoc_req(my_mgmt->frame_control) && (priv->iftype == NL80211_IFTYPE_AP))
+        {
+            atomic_set(&priv->check_nonce_running, 1);
+            //priv->change_ltf = 1;
+            schedule_delayed_work(&priv->check_nonce, 1); // 1 jiffy is the smallest time I can take (~10 ms)
+            //schedule_work(&priv->check_nonce.work);
+        }
+
+        //check association response and you are STA start nonce check
+         if(!atomic_read(&priv->check_nonce_running) && len>= 24 && fcs_ok && ieee80211_is_assoc_resp(my_mgmt->frame_control) && (priv->iftype == NL80211_IFTYPE_STATION))
+        {
+            atomic_set(&priv->check_nonce_running, 1);
+            
+            schedule_work(&priv->check_nonce.work); // 1 jiffy is the smallest time I can take (~10 ms)
+            //schedule_delayed_work(&priv->check_nonce, 1);
+        }
+        //check beacons and you are AP to perform TSF correction and start the nonce check
+        if(len>=24 && fcs_ok && ieee80211_is_beacon(my_mgmt->frame_control) && (priv->iftype == NL80211_IFTYPE_MONITOR || 
+            priv->iftype == NL80211_IFTYPE_STATION) && my_mgmt->bssid[0] == 0x66)
+        {
+          __le64 tsf_le = my_mgmt->u.beacon.timestamp;
+          u64 tsf_beacon = le64_to_cpu(tsf_le);
+          u32 tsf_now_low; 
+          u32 tsf_now_high; 
+          u64 now_inter; 
+          u64 delta_rx;
+          u64 abs_tsf_err;
+
+          
+          // s64 tsf_error = (s64)tsf_beacon - (s64)rx_status.mactime;
+          // abs_tsf_err = (tsf_error < 0) ? -tsf_error : tsf_error;
+          // printk("%s openwifi_tsf TSF-BEACON: %llu -- TSF-STA:%llu || Err_Mag:%llu", sdr_compatible_str, tsf_beacon, rx_status.mactime, abs_tsf_err);
+          //check if this is the first beacon and use it to set STA tsf! Shsould probably check that is the correct SSID
+          if(priv->is_first_beacon == 0)
+          {
+              printk("%s openwifi_rx: GOT FIRST BEACON! :)", sdr_compatible_str);
+
+               // match TSF to that of the AP + delay
+              
+              tsf_now_high = xpu_api->XPU_REG_TSF_RUNTIME_VAL_HIGH_read();
+              tsf_now_low = xpu_api->XPU_REG_TSF_RUNTIME_VAL_LOW_read();
+              now_inter = ( (u64)tsf_now_low ) | ( ((u64)tsf_now_high)<<32 );
+              delta_rx = now_inter - rx_status.mactime;
+              u64 tsf_corr = tsf_beacon + delta_rx;
+              xpu_api->XPU_REG_TSF_LOAD_VAL_write((u32)((tsf_corr >> 32)&0xffffffff),(u32)(tsf_corr & 0xFFFFFFFF));
+              
+              // set priv trackinf vars
+              priv->is_first_beacon = 1;
+              priv->tsf_err_filt = 0;
+
+              // start the nonce check function
+              // atomic_set(&priv->check_nonce_running, 1);
+              // schedule_work(&priv->check_nonce.work);
+             
+          }
+          else{
+            // Compute error
+            s64 tsf_error = (s64)tsf_beacon - (s64)rx_status.mactime;
+            abs_tsf_err = (tsf_error < 0) ? -tsf_error : tsf_error;
+              
+              // I suspect rx_status.mactime sometimes is incorrect (which results in huge tsf_error)
+              // my suspicon come from large spikes in abs_tsf_err (in the order 1K) which break the estimate filter
+              // we will ignore those and consider them bad beacons. Note that this behavior also happens whith the stock firmware 
+              if(abs_tsf_err < 300) 
+              {
+              //update filter value
+                priv->tsf_err_filt += (tsf_error - priv->tsf_err_filt) >> 4;
+
+                // If filtered error goes above 50 microseconds correct
+                u64 filt_abs = (priv->tsf_err_filt < 0) ? -priv->tsf_err_filt : priv->tsf_err_filt;
+                if(filt_abs > 50)
+                {
+                  //printk("%s openwifi_tsf Applying Correction", sdr_compatible_str);
+                  
+                  tsf_now_high = xpu_api->XPU_REG_TSF_RUNTIME_VAL_HIGH_read();
+                  tsf_now_low = xpu_api->XPU_REG_TSF_RUNTIME_VAL_LOW_read();
+                  now_inter = ( (u64)tsf_now_low ) | ( ((u64)tsf_now_high)<<32 );
+                  delta_rx = now_inter - rx_status.mactime;
+                  u64 tsf_corr = now_inter + priv->tsf_err_filt;
+                  xpu_api->XPU_REG_TSF_LOAD_VAL_write((u32)((tsf_corr >> 32)&0xffffffff),(u32)(tsf_corr & 0xFFFFFFFF));
+                  priv->tsf_err_filt = 0;
+                  
+                }
+                //printk("%s openwifi_tsf TSF-BEACON: %llu -- TSF-STA:%llu || Err_Mag:%llu", sdr_compatible_str, tsf_beacon, rx_status.mactime, abs_tsf_err);
+              } 
+              else
+              {
+                printk("%s openwifi_tsf LARGE TSF ERROR!", sdr_compatible_str);
+              }
+            
+          }
+
+        }
+        //
         if (addr1_low32 == ( *( (u32*)(priv->mac_addr+2) ) ) && priv->stat.stat_enable) {
           agc_status_and_pkt_exist_flag = (agc_status_and_pkt_exist_flag&0x7f);
           if (len>=20) {// rx stat
@@ -614,10 +717,12 @@ static irqreturn_t openwifi_rx_interrupt(int irq, void *dev_id)
                   priv->stat.rx_data_fail_agc_gain_value_realtime = agc_status_and_pkt_exist_flag;
                 } else {
                   priv->stat.rx_data_ok_agc_gain_value_realtime = agc_status_and_pkt_exist_flag;
+         
                 }
               } else if ( ieee80211_is_mgmt(hdr->frame_control) ) {
                 priv->stat.rx_mgmt_pkt_mcs_realtime = rate_idx;
                 priv->stat.rx_mgmt_pkt_num_total++;
+               
                 if (!fcs_ok) {
                   priv->stat.rx_mgmt_pkt_num_fail++;
                   priv->stat.rx_mgmt_pkt_fail_mcs_realtime = rate_idx;
@@ -1774,8 +1879,9 @@ static u64 openwifi_get_tsf(struct ieee80211_hw *dev,
 {
   u32 tsft_low, tsft_high;
 
-  tsft_low = xpu_api->XPU_REG_TSF_RUNTIME_VAL_LOW_read();
+  
   tsft_high = xpu_api->XPU_REG_TSF_RUNTIME_VAL_HIGH_read();
+  tsft_low = xpu_api->XPU_REG_TSF_RUNTIME_VAL_LOW_read();
   //printk("%s openwifi_get_tsf: %08x%08x\n", sdr_compatible_str,tsft_high,tsft_low);
   return( ( (u64)tsft_low ) | ( ((u64)tsft_high)<<32 ) );
 }
@@ -1839,6 +1945,112 @@ resched:
   // printk("%s openwifi_beacon_work beacon_int %d\n", sdr_compatible_str, vif->bss_conf.beacon_int);
 }
 
+
+u64 openwifi_sha256_calc(struct openwifi_priv *priv, u64 val)
+{
+    u8 buf[8];
+    u8 digest[32];
+    u64 result;
+    int ret;
+
+    if (!priv->tfm || !priv->desc)
+        return 0;   /* or some error sentinel */
+
+    /* keep only bottom 58 bits */
+    val &= ((1ULL << 58) - 1);
+
+    /* pack into 8 bytes (little endian) */
+    buf[0] = (val >> 0)  & 0xFF;
+    buf[1] = (val >> 8)  & 0xFF;
+    buf[2] = (val >> 16) & 0xFF;
+    buf[3] = (val >> 24) & 0xFF;
+    buf[4] = (val >> 32) & 0xFF;
+    buf[5] = (val >> 40) & 0xFF;
+    buf[6] = (val >> 48) & 0xFF;
+    buf[7] = (val >> 56) & 0x03;   /* only 2 bits used (58 total) */
+
+    ret = crypto_shash_init(priv->desc);
+    if (ret)
+        return 0;
+
+    ret = crypto_shash_update(priv->desc, buf, sizeof(buf));
+    if (ret)
+        return 0;
+
+    ret = crypto_shash_final(priv->desc, digest);
+    if (ret)
+        return 0;
+
+    /* take first 8 bytes of SHA256 as u64 */
+    result = ((u64)digest[0] << 56) |
+             ((u64)digest[1] << 48) |
+             ((u64)digest[2] << 40) |
+             ((u64)digest[3] << 32) |
+             ((u64)digest[4] << 24) |
+             ((u64)digest[5] << 16) |
+             ((u64)digest[6] << 8)  |
+             ((u64)digest[7]);
+
+    return result;
+}
+
+static void openwifi_check_nonce(struct work_struct *work){
+
+    struct openwifi_priv *priv = container_of(work, struct openwifi_priv, check_nonce.work);
+    // Read current TSF
+    u64 curr_tsf_time = openwifi_get_tsf(NULL, NULL); 
+    u64 bin_idx = curr_tsf_time >> 21; // Devide by bin WIDTH (2^19 = 524,288) // we expect this number to change every 0.5 seconds
+    //u64 k_prime; 
+
+    // If it has not been init, then lets set the current nonce to the updated bin;
+    // if(!atomic_read(&priv->check_nonce_init))
+    // {
+    //     priv->current_nonce = bin_idx;
+    //     k_prime = bin_idx | INIT_KEY;
+    //     priv->next_preamble = openwifi_sha256_calc(priv, k_prime) & LTF_ACTIVE_MASK;
+    //     priv->next_preamble_low = priv->next_preamble & 0xFFFFFFFF;
+    //     priv->next_preamble_high = (priv->next_preamble >> 32) & 0xffffffff;
+
+    //     atomic_set(&priv->check_nonce_init,1); // check nonce has been initialized
+    //     atomic_set(&priv->next_preamble_ready, 1); // next preamble has been calculated;
+    //     schedule_delayed_work(&priv->check_nonce, 1); // reschedule a call to this function;
+    //     return;
+    // }
+
+    // if(!atomic_read(&priv->next_preamble_ready)) // next preamble not calculated
+    // {
+    //     k_prime = (priv->current_nonce + 1) | INIT_KEY; // calcualte the next bin value
+    //     priv->next_preamble = openwifi_sha256_calc(priv, k_prime) & LTF_ACTIVE_MASK;
+    //     priv->next_preamble_low = priv->next_preamble & 0xFFFFFFFF;
+    //     priv->next_preamble_high = (priv->next_preamble >> 32) & 0xffffffff;
+    //     atomic_set(&priv->next_preamble_ready, 1); // next preamble has been calculated
+    //     schedule_delayed_work(&priv->check_nonce, 1); // reschedule a call to this function;
+    //     return;
+    // }
+
+    if(priv->current_nonce != bin_idx)
+    {
+        priv->current_nonce = bin_idx;
+        atomic_set(&priv->next_preamble_ready, 0); // ask for next preamble
+        u64 k_prime = bin_idx | INIT_KEY;
+        u64 new_ltf = openwifi_sha256_calc(priv, k_prime) & LTF_ACTIVE_MASK;
+
+
+        u32 ltf_low = new_ltf & 0xFFFFFFFF;
+        u32 ltf_high = (new_ltf >> 32)&0xffffffff;
+        //printk("%s TSF_TIME = %llu, NEW LTF=%llx", sdr_compatible_str, curr_tsf_time, new_ltf);
+        openofdm_rx_api->OPENOFDM_RX_REG_LTF_ONE_write(ltf_low);
+        openofdm_rx_api->OPENOFDM_RX_REG_LTF_TWO_write(ltf_high); 
+
+        openofdm_tx_api->OPENOFDM_TX_REG_LTF_LOW_write(ltf_low);
+	      openofdm_tx_api->OPENOFDM_TX_REG_LTF_HIGH_write(ltf_high);
+        
+        //printk("%s TSF_TIME = %llu, NEW LTF=%llx", sdr_compatible_str, curr_tsf_time, priv->next_preamble);
+    }
+    schedule_delayed_work(&priv->check_nonce, 1); // 1 jiffy is the smallest time I can take (~10 ms)
+}
+
+
 static int openwifi_add_interface(struct ieee80211_hw *dev,
          struct ieee80211_vif *vif)
 {
@@ -1875,7 +2087,11 @@ static int openwifi_add_interface(struct ieee80211_hw *dev,
 
   vif_priv->dev = dev;
   INIT_DELAYED_WORK(&vif_priv->beacon_work, openwifi_beacon_work);
+  INIT_DELAYED_WORK(&priv->check_nonce, openwifi_check_nonce);
   vif_priv->enable_beacon = false;
+  atomic_set(&priv->check_nonce_running, 0);
+  atomic_set(&priv->check_nonce_init, 0);
+  atomic_set(&priv->next_preamble_ready,0);
 
   priv->mac_addr[0] = vif->addr[0];
   priv->mac_addr[1] = vif->addr[1];
@@ -1883,12 +2099,54 @@ static int openwifi_add_interface(struct ieee80211_hw *dev,
   priv->mac_addr[3] = vif->addr[3];
   priv->mac_addr[4] = vif->addr[4];
   priv->mac_addr[5] = vif->addr[5];
+  priv->iftype = vif->type;
+
+  priv->current_nonce = 0;
+  priv->is_first_beacon = 0;
+  priv->next_preamble = 0;
+
   xpu_api->XPU_REG_MAC_ADDR_write(priv->mac_addr); // set mac addr in fpga
 
   printk("%s openwifi_add_interface end with vif idx %d addr %02x:%02x:%02x:%02x:%02x:%02x\n", sdr_compatible_str,vif_priv->idx,
   vif->addr[0],vif->addr[1],vif->addr[2],vif->addr[3],vif->addr[4],vif->addr[5]);
+  
 
+   // For the SHA 256 calcualtion
+  priv->tfm = crypto_alloc_shash("sha256", 0, 0);
+  int desc_size;
+  if(IS_ERR(priv->tfm))
+  {
+    printk("%s openwifi_add_interface ERROR: crypto alloc sha!", sdr_compatible_str);
+    priv->tfm = NULL; 
+    priv->desc = NULL;
+    return 0;
+  }
+
+  desc_size = sizeof(*priv->desc) + crypto_shash_descsize(priv->tfm);
+  priv->desc = kmalloc(desc_size, GFP_KERNEL);
+  if(!priv->desc)
+  {
+       printk("%s openwifi_add_interface ERROR: kmalloc!", sdr_compatible_str);
+       crypto_free_shash(priv->tfm);
+      priv->tfm = NULL; 
+      priv->desc = NULL;
+      return 0;
+  }
+  priv->desc->tfm   = priv->tfm;
+
+ 
   return 0;
+}
+
+static void openwifi_clean_sha(struct openwifi_priv *priv)
+{
+    kfree(priv->desc);
+    priv->desc = NULL;
+
+    if (priv->tfm) {
+        crypto_free_shash(priv->tfm);
+        priv->tfm = NULL;
+    }
 }
 
 static void openwifi_remove_interface(struct ieee80211_hw *dev,
@@ -1896,7 +2154,9 @@ static void openwifi_remove_interface(struct ieee80211_hw *dev,
 {
   struct openwifi_vif *vif_priv;
   struct openwifi_priv *priv = dev->priv;
-  
+  atomic_set(&priv->check_nonce_running, 0);
+  cancel_delayed_work_sync(&priv->check_nonce);
+  openwifi_clean_sha(priv);
   vif_priv = (struct openwifi_vif *)&vif->drv_priv;
   priv->vif[vif_priv->idx] = NULL;
   printk("%s openwifi_remove_interface vif idx %d\n", sdr_compatible_str, vif_priv->idx);
@@ -2037,6 +2297,7 @@ static int openwifi_conf_tx(struct ieee80211_hw *dev, struct ieee80211_vif *vif,
       (1<<((reg_val>> 0)&0xF))-1);
   }
   xpu_api->XPU_REG_CSMA_CFG_write(reg_val);
+   
   return(0);
 }
 
@@ -2758,3 +3019,5 @@ static struct platform_driver openwifi_dev_driver = {
 };
 
 module_platform_driver(openwifi_dev_driver);
+
+

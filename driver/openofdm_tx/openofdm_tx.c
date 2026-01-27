@@ -49,6 +49,14 @@ static inline void OPENOFDM_TX_REG_INIT_DATA_STATE_write(u32 Data) {
 	reg_write(OPENOFDM_TX_REG_INIT_DATA_STATE_ADDR, Data);
 }
 
+static inline void OPENOFDM_TX_REG_LTF_LOW_write(u32 Data){
+	reg_write(OPENOFDM_TX_REG_LTF_LOW_ADDR, Data);
+}
+
+static inline void OPENOFDM_TX_REG_LTF_HIGH_write(u32 Data){
+	reg_write(OPENOFDM_TX_REG_LTF_HIGH_ADDR, Data);
+}
+
 static const struct of_device_id dev_of_ids[] = {
 	{ .compatible = "sdr,openofdm_tx", },
 	{}
@@ -78,6 +86,10 @@ static inline u32 hw_init(enum openofdm_tx_mode mode){
 			printk("%s hw_init mode %d is wrong!\n", openofdm_tx_compatible_str, mode);
 			err=1;
 	}
+
+	openofdm_tx_api->OPENOFDM_TX_REG_LTF_LOW_write(OPENOFDM_RX_LTF_ONE_VAL);
+	openofdm_tx_api->OPENOFDM_TX_REG_LTF_HIGH_write(OPENOFDM_RX_LTF_TWO_VAL);
+	printk("%s MSB_LTF %x LSB_LTF %x\n", openofdm_rx_compatible_str, OPENOFDM_RX_LTF_TWO_VAL, OPENOFDM_RX_LTF_ONE_VAL);
 
 	//rst
 	for (i=0;i<8;i++)
@@ -123,7 +135,8 @@ static int dev_probe(struct platform_device *pdev)
 	openofdm_tx_api->OPENOFDM_TX_REG_MULTI_RST_write=OPENOFDM_TX_REG_MULTI_RST_write;
 	openofdm_tx_api->OPENOFDM_TX_REG_INIT_PILOT_STATE_write=OPENOFDM_TX_REG_INIT_PILOT_STATE_write;
 	openofdm_tx_api->OPENOFDM_TX_REG_INIT_DATA_STATE_write=OPENOFDM_TX_REG_INIT_DATA_STATE_write;
-	
+	openofdm_tx_api->OPENOFDM_TX_REG_LTF_LOW_write=OPENOFDM_TX_REG_LTF_LOW_write;
+	openofdm_tx_api->OPENOFDM_TX_REG_LTF_HIGH_write=OPENOFDM_TX_REG_LTF_HIGH_write;
 	/* Request and map I/O memory */
 	io = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	base_addr = devm_ioremap_resource(&pdev->dev, io);
